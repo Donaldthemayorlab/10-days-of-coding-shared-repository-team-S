@@ -1,0 +1,51 @@
+{
+  "goal": [
+    "GOAAAAAL! {scorer} don score for {minute} mins! {team} fans dey mad!",
+    "E don enter! {scorer} put am inside for {minute} mins! Wahala dey!",
+    "Chai! Beautiful goal from {scorer} at {minute} mins! {team} dey lead now!",
+    "Net don shake! {scorer} don cook food for {minute} mins. Open tap!",
+    "Simple finish! {scorer} collect the ball at {minute} mins, tap am inside."
+  ],
+  "late_equalizer": [
+    "OMG!!! GOAL AT THE DEATH! {scorer} equalizer for {minute} mins! Everywhere don scatter!!!",
+    "UNBELIEVABLE! {scorer} don draw the match back for {minute} mins! High blood pressure dey!!!",
+    "Drama finish! {scorer} score late equalizer at {minute} mins! Opponent fans dey cry o!",
+    "Pure madness! Equalizer for {minute} mins by {scorer}! Game don turn upside down!",
+    "Heartbreak for defense! {scorer} find equalizer out of nowhere for {minute} mins!"
+  ],
+  "yellow_card": [
+    "Ref don show {player} yellow card for {minute} mins! Make he dey careful o.",
+    "Yellow card for {player} at {minute} mins. That tackle rough small.",
+    "Ref don warning {player} with yellow card for {minute} mins. Dangerous play!",
+    "Booked! {player} collect yellow for {minute} mins. He dey find trouble.",
+    "Yellow card flag up for {player} at {minute} mins. No logic in that tackle."
+  ],
+  "red_card": [
+    "Omo! Direct red card for {player} at {minute} mins! Total disaster!",
+    "Ref don send {player} comot for {minute} mins! Red card! Pack your load!",
+    "Red card! {player} don commit crime for {minute} mins. Straight to dressing room!",
+    "Match don finish for {player}! Red card at {minute} mins. {team} dey 10 men now!",
+    "Chai, {player} collect red for {minute} mins. Over-aggressive play."
+  ],
+  "substitution": [
+    "Tactical move! {player_out} don comot, {player_in} dey enter field for {minute} mins.",
+    "Change dey happen at {minute} mins: {player_out} dey rest, {player_in} don touch ground.",
+    "Fresh legs! {player_in} come in for {player_out} at {minute} mins to change the game.",
+    "Coach don change plan! {player_out} pull out, {player_in} enter inside for {minute} mins.",
+    "Substitution for {minute} mins: {player_out} don go bench, {player_in} don enter."
+  ],
+  "kickoff": [
+    "Game don start! Ref don blow whistle for kickoff. Everywhere burst!",
+    "Match don engage! Ball don roll for center. Let the best team win!",
+    "Kickoff time! Whistle don sound, players don deploy.",
+    "Oya let's go! Match don begin, no time to check time.",
+    "Ref don blow start whistle. Game on!"
+  ],
+  "fulltime": [
+    "Ref don blow final whistle! Game over! Who win don win!",
+    "Fulltime! Match don finish. Final scores don set.",
+    "90 mins don complete! Everywhere scatter as ref end the match.",
+    "Game done! No more action, players don tire. Fulltime!",
+    "Whistle don sound for the last time. Match over!"
+  ]
+}
