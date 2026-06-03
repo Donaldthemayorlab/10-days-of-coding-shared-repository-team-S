@@ -1,355 +1,261 @@
 import asyncio
-import json
-import os
-import random
-import time
-from datetime import datetime
-import requests
 import websockets
-import uuid
-import base64
+import json
+import requests
+import os
+from datetime import datetime
 from dotenv import load_dotenv
-import azure.cognitiveservices.speech as speechsdk
+from google import genai
+from azure.cognitiveservices.speech import SpeechConfig, SpeechSynthesizer, AudioConfig
 
-# 1. Load hidden environment variables from your local .env file
+# Load environment variables from your local .env file
 load_dotenv()
 
-# Configuration
+# --- API & CLIENT CONFIGURATION ---
 API_URL = "https://v3.football.api-sports.io/fixtures?live=all"
 API_KEY = os.getenv("API_SPORTS_KEY")
-POLL_INTERVAL = 30  # Seconds between ticks
-SNAPSHOT_FILE = "snapshot.json"
-WS_HOST = "localhost"
-WS_PORT = 8080
-AUDIO_OUTPUT_DIR = "audio_outputs"
 
-# Create audio output directory if it doesn't exist
-if not os.path.exists(AUDIO_OUTPUT_DIR):
-    os.makedirs(AUDIO_OUTPUT_DIR)
-    print(f"[System] Created audio folder layout directory: '{AUDIO_OUTPUT_DIR}/'")
-
-# Track connected frontend client applications
-connected_clients = set()
-
-# Load the template system bank
+# Initialize Gemini GenAI SDK Client
 try:
-    with open("templates.json", "r") as f:
-        templates = json.load(f)
-    print("[Templates] Successfully loaded templates.json")
+    ai_client = genai.Client()
+    print("[AI Engine] Gemini Fallback Client initialized successfully.")
 except Exception as e:
-    print(f"[Templates Warning] Could not load templates.json: {e}")
-    templates = {}
+    print(f"[AI Engine Warning] Failed to initialize Gemini Client: {e}")
+    ai_client = None
 
+# Initialize Azure Text-to-Speech Config
+azure_key = os.getenv("AZURE_SPEECH_KEY")
+azure_region = os.getenv("AZURE_SPEECH_REGION")
+speech_config = None
+
+if azure_key and azure_region:
+    speech_config = SpeechConfig(subscription=azure_key, region=azure_region)
+    # Using the beautiful Nigerian English voice profile
+    speech_config.speech_synthesis_voice_name = "en-NG-EzinneNeural"
+    print("[Voice Engine] Azure TTS Configured successfully.")
+else:
+    print("[Voice Engine Warning] Azure keys missing inside your .env file.")
+
+# Local file storage definitions
+SNAPSHOT_FILE = "snapshot.json"
+TEMPLATES_FILE = "templates.json"
+
+# Active WebSocket client connection pool tracking array
+CONNECTED_CLIENTS = set()
+
+# Load preset fallback commentary cards layout database structure
+try:
+    with open(TEMPLATES_FILE, "r", encoding="utf-8") as f:
+        COMMENTARY_TEMPLATES = json.load(f)
+    print(f"[Templates] Successfully loaded {TEMPLATES_FILE}")
+except Exception as e:
+    print(f"[Templates Error] Could not load template cards mapping: {e}")
+    COMMENTARY_TEMPLATES = {}
+
+# --- HELPER LOGIC FUNCTIONS ---
 
 def load_snapshot():
-    """Load the previous snapshot from your local file memory."""
+    """Loads the last processed match snapshot dictionary to handle diffing logic."""
     if os.path.exists(SNAPSHOT_FILE):
         try:
             with open(SNAPSHOT_FILE, "r") as f:
                 return json.load(f)
-        except Exception as e:
-            print(f"[Memory Error] Failed to read snapshot file: {e}")
+        except Exception:
+            return {}
     return {}
 
-
-def save_snapshot(snapshot):
-    """Save the current state as the baseline snapshot for the next tick."""
+def save_snapshot(data):
+    """Saves the current live match state dictionary into local workspace file arrays."""
     try:
         with open(SNAPSHOT_FILE, "w") as f:
-            json.dump(snapshot, f, indent=2)
+            json.dump(data, f, indent=4)
     except Exception as e:
-        print(f"[Memory Error] Failed to save snapshot file: {e}")
+        print(f"[Snapshot Error] Failed to write state tracking file: {e}")
 
+def get_fallback_commentary(event_type, player_name, team_name):
+    """Fallback compiler dictionary mapping values if cloud AI tools timeout."""
+    templates = COMMENTARY_TEMPLATES.get(event_type, [
+        "Chai! Big move on top the pitch as {player} make action for {team}!"
+    ])
+    import random
+    selected = random.choice(templates)
+    return selected.format(player=player_name, team=team_name)
 
-def generate_contextual_pidgin_alert(event_type, event_data, fixture_payload):
-    """Python version of pickTemplate with context-aware evaluation features."""
-    minute = event_data.get("minute", 0)
-    
-    # Calculate score gaps straight from live match tokens
-    goals_info = fixture_payload.get("goals", {})
-    home_score = goals_info.get("home") if goals_info.get("home") is not None else 0
-    away_score = goals_info.get("away") if goals_info.get("away") is not None else 0
-    score_delta = abs(home_score - away_score)
-
-    # Trigger premium commentary strings for late match-saving equalizers
-    if event_type == "goal" and minute >= 85 and score_delta == 0:
-        variants = templates.get("late_equalizer")
-        print("🔥 [Context Engine] High drama detected! Using late equalizer templates.")
-    else:
-        variants = templates.get(event_type)
-
-    if not variants:
-        return f"Match event happen ({event_type})!"
-
-    chosen_template = random.choice(variants)
-    try:
-        return chosen_template.format(**event_data)
-    except KeyError:
-        return chosen_template
-
-
-def translate_pidgin_text(text):
-    """
-    Sends the generated Pidgin text to Azure Translator.
-    Returns a dictionary containing French and Hausa translations.
-    """
-    key = os.getenv("AZURE_TRANSLATOR_KEY")
-    region = os.getenv("AZURE_REGION", "global")
-    endpoint = "https://api.cognitive.microsofttranslator.com/translate"
-
-    params = {
-        "api-version": "3.0",
-        "from": "en",
-        "to": ["fr", "ha"]
-    }
-
-    headers = {
-        "Ocp-Apim-Subscription-Key": key,
-        "Ocp-Apim-Subscription-Region": region,
-        "Content-type": "application/json",
-        "X-ClientTraceId": str(uuid.uuid4())
-    }
-
-    body = [{"text": text}]
-
-    try:
-        response = requests.post(endpoint, params=params, headers=headers, json=body, timeout=5)
-        response.raise_for_status()
-        translations_data = response.json()[0]["translations"]
-
-        translations = {"french": "", "hausa": ""}
-        for item in translations_data:
-            if item["to"] == "fr":
-                translations["french"] = item["text"]
-            elif item["to"] == "ha":
-                translations["hausa"] = item["text"]
-                
-        return translations
-
-    except Exception as e:
-        print(f"[Azure Translator Error] Failed to fetch translation: {e}")
-        return {"french": "[Translation Error]", "hausa": "[Translation Error]"}
-
-
-def generate_tts_audio(text, event_id):
-    """
-    Sends Pidgin text to Azure Speech using the en-NG-EzinneNeural voice.
-    Saves the resulting audio file locally and returns its base64 encoded string.
-    """
-    speech_key = os.getenv("AZURE_SPEECH_KEY")
-    speech_region = os.getenv("AZURE_SPEECH_REGION")
-
-    if not speech_key or not speech_region:
-        print("[Azure TTS Error] Missing Speech Key or Region configuration credentials.")
-        return None
-
-    # Setup file output path
-    output_filename = f"{event_id}.mp3"
-    file_path = os.path.join(AUDIO_OUTPUT_DIR, output_filename)
-
-    # Configure Azure Speech Engine Settings
-    speech_config = speechsdk.SpeechConfig(subscription=speech_key, region=speech_region)
-    speech_config.speech_synthesis_voice_name = "en-NG-EzinneNeural"
-    speech_config.set_speech_synthesis_output_format(speechsdk.SpeechSynthesisOutputFormat.Audio16Khz128KBitRateMonoMp3)
-    
-    # Configure file routing
-    audio_config = speechsdk.audio.AudioOutputConfig(filename=file_path)
-    synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
-
-    try:
-        result = synthesizer.speak_text_async(text).get()
-
-        if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-            print(f"🎙️  [Azure TTS] Successfully generated audio voiceover: {file_path}")
-            
-            # Read the audio file and convert to a Base64 string so it can pass cleanly over WebSockets
-            with open(file_path, "rb") as audio_file:
-                encoded_string = base64.b64encode(audio_file.read()).decode("utf-8")
-            
-            return {
-                "file_path": file_path,
-                "audio_base64": encoded_string
-            }
-        else:
-            print(f"[Azure TTS Error] Audio synthesis failed. Reason: {result.reason}")
-            # --- ADD THIS LOG SNARE TO SNIFF THE HIDDEN ERROR CODE ---
-            if result.reason == speechsdk.ResultReason.Canceled:
-                cancellation_details = result.cancellation_details
-                print(f"❌ [Cancellation Error Details]: {cancellation_details.error_details}")
-                print(f"❌ [Cancellation Error Code]: {cancellation_details.error_code}")
-            return None
-
-    except Exception as e:
-        print(f"[Azure TTS Error] Failed during speech compilation execution: {e}")
-        return None
-
-
-async def register_client(websocket):
-    """Register/unregister incoming frontend WebSocket connections."""
-    connected_clients.add(websocket)
-    print(f"[WebSocket] Frontend client connected. Total: {len(connected_clients)}")
-    try:
-        await websocket.wait_closed()
-    finally:
-        connected_clients.remove(websocket)
-        print(f"[WebSocket] Frontend client disconnected. Total: {len(connected_clients)}")
-
-
-async def broadcast_to_frontend(events):
-    """Stream detected events to all connected web applications concurrently."""
-    if not events or not connected_clients:
-        return
-    message = json.dumps({"type": "NEW_EVENTS", "data": events})
-    await asyncio.gather(
-        *[client.send(message) for client in connected_clients],
-        return_exceptions=True,
+def call_gemini_pidgin_engine(event_type, player_name, team_name, match_context=""):
+    """Calls Gemini 2.5 Flash to generate creative, contextual Nigerian Pidgin commentary."""
+    if not ai_client:
+        return get_fallback_commentary(event_type, player_name, team_name)
+        
+    prompt = (
+        f"You are a passionate, witty Nigerian football commentator broadcasting a live match. "
+        f"Generate a short, explosive, 1-to-2 sentence commentary in authentic Nigerian Pidgin English "
+        f"for this event: A '{event_type}' by player '{player_name}' playing for team '{team_name}'. "
+        f"Context details: {match_context}. Make it incredibly raw, funny, and localized (e.g., use phrases "
+        f"like 'Gbege!', 'Chai!', 'Ojoro', 'Everywhere burst!', 'No cap!'). Do not include any meta-text or tags."
     )
-    print(f"[WebSocket] Broadcasted {len(events)} new event(s) to the frontend.")
+    
+    try:
+        response = ai_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
+        return response.text.strip()
+    except Exception as e:
+        print(f"[AI Fallback] Gemini call failed ({e}). Reverting to default template structures.")
+        return get_fallback_commentary(event_type, player_name, team_name)
 
+def generate_tts_audio_base64(text_content):
+    """Synthesizes text input into a raw MP3 stream using Azure, returning a base64 string."""
+    if not speech_config:
+        return ""
+        
+    try:
+        # Pull system audio output redirectors to direct bytes arrays memory variables buffers
+        import base64
+        buffer = io_bytes = None
+        
+        # We configure it to pull raw audio stream bytes output right out of memory lines
+        pull_stream = AudioConfig(use_default_speaker=False)
+        synthesizer = SpeechSynthesizer(speech_config=speech_config, audio_config=None)
+        
+        result = synthesizer.speak_text_async(text_content).get()
+        
+        if result.reason.name == "SynthesizingAudioCompleted":
+            raw_audio_data = result.audio_data
+            return base64.b64encode(raw_audio_data).decode('utf-8')
+        else:
+            return ""
+    except Exception as e:
+        print(f"[Voice Error] Azure Speech engine processing failed: {e}")
+        return ""
+
+def process_new_event(fixture_id, event, home_team, away_team):
+    """Assembles language payloads and synthesizes local speech files for any new event."""
+    elapsed = event.get("time", {}).get("elapsed", 0)
+    p_name = event.get("player", {}).get("name") or "Unknown Player"
+    t_name = event.get("team", {}).get("name") or "Unknown Team"
+    ev_type = event.get("type", "Goal").lower()
+    ev_detail = event.get("detail", "")
+    
+    match_title = f"{home_team} vs {away_team}"
+    context_string = f"Happening in the {elapsed} minute of the match between {match_title}."
+    
+    print(f"🔥 [Event Trigger] Processing new '{ev_type}' for {p_name} ({t_name}) at Minute {elapsed}'")
+    
+    # Generate Multilingual layout targets
+    pidgin_text = call_gemini_pidgin_engine(ev_type, p_name, t_name, context_string)
+    
+    # Local placeholder fallbacks for alternative translations
+    french_text = f"But! Action de {p_name} pour {t_name} à la minute {elapsed}."
+    hausa_text = f"Haka ne! {p_name} ya nuna bajinta ga kungiyar {t_name} a minti na {elapsed}."
+    
+    # Generate Audio via Azure Speech pipeline
+    audio_b64 = generate_tts_audio_base64(pidgin_text)
+    
+    event_payload = {
+        "eventId": f"{fixture_id}_{elapsed}_{p_name.replace(' ', '_')}",
+        "fixtureId": fixture_id,
+        "teams": match_title,
+        "type": ev_type,
+        "detail": ev_detail,
+        "pidgin_alert": pidgin_text,
+        "french_alert": french_text,
+        "hausa_alert": hausa_text,
+        "audio_data": audio_b64,
+        "raw_event": event
+    }
+    return event_payload
+
+# --- DYNAMIC DIFFING ENGINE ---
+
+def check_for_new_events(api_response_payload):
+    """Compares incoming match responses against stored data snapshots to catch new goals."""
+    old_snapshot = load_snapshot()
+    new_snapshot = {}
+    detected_events_list = []
+    
+    for match in api_response_payload:
+        f_id = str(match["fixture"]["id"])
+        home_team = match["teams"]["home"]["name"]
+        away_team = match["teams"]["away"]["name"]
+        
+        # Capture ongoing list of events belonging to this fixture frame
+        events = match.get("events", [])
+        new_snapshot[f_id] = events
+        
+        # Compare incoming data arrays with our historical memory layout
+        old_events = old_snapshot.get(f_id, [])
+        
+        if len(events) > len(old_events):
+            # Isolate the newly appended event blocks
+            newly_added_items = events[len(old_events):]
+            for item in newly_added_items:
+                processed_item = process_new_event(f_id, item, home_team, away_team)
+                detected_events_list.append(processed_item)
+                
+    save_snapshot(new_snapshot)
+    return detected_events_list
+
+# --- CORE ASYNC LOOPS & RUNTIMES ---
+
+async def broadcast_to_subscribers(message_dictionary):
+    """Pushes compiled JSON event update arrays down the active socket pipeline."""
+    if CONNECTED_CLIENTS:
+        payload_string = json.dumps(message_dictionary)
+        await asyncio.gather(*[client.send(payload_string) for client in CONNECTED_CLIENTS])
 
 async def poll_fixtures():
-    """Main background engine running on a continuous 30s interval loop."""
+    """Main background engine running on a continuous throttled interval loop."""
+    print("[Poller Engine] Live match tracker engine starting loop intervals safely...")
+    headers = {"x-apisports-key": API_KEY, "User-Agent": "Mozilla/5.0"}
+    
     while True:
-        current_time = datetime.now().strftime("%H:%M:%S")
-        print(f"\n[Poller] Fetching latest live fixtures... ({current_time})")
-
         try:
-            headers = {
-                "x-apisports-key": API_KEY,
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            }
-
+            # Make the network request out to the target endpoint switch loop
             response = requests.get(API_URL, headers=headers, timeout=10)
             response.raise_for_status()
-
-            api_data = response.json()
-            current_fixtures = api_data.get("response", [])
-
-            old_snapshot = load_snapshot()
-            detected_events = []
-            new_snapshot = {}
-
-            for fixture in current_fixtures:
-                fixture_info = fixture.get("fixture", {})
-                fixture_id = str(fixture_info.get("id"))
-
-                if not fixture_id or fixture_id == "None":
-                    continue
-
-                current_events = fixture.get("events", [])
-                new_snapshot[fixture_id] = current_events
-
-                # Diff Engine Logic - Protected with startup gate condition
-                if old_snapshot and fixture_id in old_snapshot:
-                    old_event_signatures = {
-                        f"{event.get('time', {}).get('elapsed')}_{event.get('team', {}).get('id')}_{event.get('type')}_{event.get('detail')}"
-                        for event in old_snapshot[fixture_id]
-                    }
-
-                    for event in current_events:
-                        event_sig = f"{event.get('time', {}).get('elapsed')}_{event.get('team', {}).get('id')}_{event.get('type')}_{event.get('detail')}"
-
-                        if event_sig not in old_event_signatures:
-                            teams_info = fixture.get("teams", {})
-                            raw_type = str(event.get("type", "")).lower().replace(" ", "_")
-                            team_name = event.get("team", {}).get("name") or "Team"
-
-                            # --- Normalization Mappers ---
-                            if raw_type == "subst":
-                                raw_type = "substitution"
-                            elif raw_type == "card":
-                                raw_detail = str(event.get("detail", "")).lower()
-                                if "yellow" in raw_detail:
-                                    raw_type = "yellow_card"
-                                elif "red" in raw_detail:
-                                    raw_type = "red_card"
-                                else:
-                                    raw_type = "yellow_card"
-
-                            # Contextual player safety fallback string assignments
-                            actual_player = event.get("player", {}).get("name")
-                            player_fallback = actual_player if actual_player else f"One {team_name} player"
-                            
-                            actual_assist = event.get("assist", {}).get("name")
-                            assist_fallback = actual_assist if actual_assist else "On"
-
-                            template_variables = {
-                                "scorer": player_fallback,
-                                "player": player_fallback,
-                                "player_out": player_fallback,
-                                "player_in": assist_fallback,
-                                "minute": event.get("time", {}).get("elapsed") or 0,
-                                "team": team_name,
-                            }
-
-                            # Unique Event Identity Token for filename assignments
-                            event_id = str(uuid.uuid4())[:8]
-
-                            # -----------------------------------------------------------
-                            # 🚀 THE 4-STAGE PIPELINE WIREFRAME
-                            # -----------------------------------------------------------
-                            
-                            # STAGE 1: Generate high-energy Pidgin commentary string baseline
-                            pidgin_message = generate_contextual_pidgin_alert(
-                                raw_type, template_variables, fixture
-                            )
-
-                            # STAGE 2: Request multilingual translations from Azure cloud
-                            print(f"🔄 Translating text via Azure Translator...")
-                            translations = translate_pidgin_text(pidgin_message)
-
-                            # STAGE 3: Compile Speech Voiceover Audio via Azure Speech
-                            print(f"🔊 Compiling audio speech file via Azure TTS...")
-                            audio_payload = generate_tts_audio(pidgin_message, event_id)
-                            
-                            audio_base64_str = audio_payload["audio_base64"] if audio_payload else None
-
-                            # STAGE 4: Package into feed entry structure list array
-                            detected_events.append(
-                                {
-                                    "eventId": event_id,
-                                    "fixtureId": fixture_id,
-                                    "teams": f"{teams_info.get('home', {}).get('name')} vs {teams_info.get('away', {}).get('name')}",
-                                    "type": raw_type,
-                                    "pidgin_alert": pidgin_message,
-                                    "french_alert": translations["french"],
-                                    "hausa_alert": translations["hausa"],
-                                    "audio_data": audio_base64_str,  # Directly streams down to UI player elements
-                                    "raw_event": event,
-                                }
-                            )
-
-            # Rewrite baseline memory log file
-            save_snapshot(new_snapshot)
-
-            if detected_events:
-                print(f"[Diff] Detected {len(detected_events)} new event(s)!")
-                for item in detected_events:
-                    print(f"\n🏟️  [{item['teams']}]")
-                    print(f"🇳🇬 PIDGIN: {item['pidgin_alert']}")
-                    print(f"🇫🇷 FRENCH: {item['french_alert']}")
-                    print(f"🇳🇬 HAUSA:  {item['hausa_alert']}")
-                    if item["audio_data"]:
-                        print(f"🎵 AUDIO SOUND: Compiled successfully ({item['eventId']}.mp3 saved!)")
-                await broadcast_to_frontend(detected_events)
-            else:
-                print("[Diff] No new events detected on this tick.")
-
+            response_data = response.json().get("response", [])
+            
+            # Run data arrays through the diffing compiler
+            new_alerts = check_for_new_events(response_data)
+            
+            if new_alerts:
+                print(f"📣 [Broadcaster] Pushing {len(new_alerts)} fresh match event blocks to UI...")
+                await broadcast_to_subscribers({
+                    "type": "NEW_EVENTS",
+                    "data": new_alerts
+                })
+                
         except Exception as e:
             print(f"[Poller Error] Failed to fetch or process data: {e}")
+            
+        # 🚀 RATE LIMIT SECURITY WALL: Set to 60 seconds to completely protect your API quotas!
+        await asyncio.sleep(60)
 
-        await asyncio.sleep(POLL_INTERVAL)
-
+async def handle_websocket_handshake(websocket):
+    """Registers connected Streamlit UI views into the global broadcast pool framework."""
+    CONNECTED_CLIENTS.add(websocket)
+    print(f"🔌 [WebSocket] New client joined the workspace stream. Total pool: {len(CONNECTED_CLIENTS)}")
+    try:
+        async for message in websocket:
+            # Sit open waiting for client keep-alive pings or incoming subscription arrays
+            pass
+    except websockets.exceptions.ConnectionClosed:
+        pass
+    finally:
+        CONNECTED_CLIENTS.remove(websocket)
+        print(f"❌ [WebSocket] Client left the stream. Active pool remains: {len(CONNECTED_CLIENTS)}")
 
 async def main():
-    """Initializes background loop task servers."""
-    async with websockets.serve(register_client, WS_HOST, WS_PORT):
-        print(f"[WebSocket] Server running on ws://{WS_HOST}:{WS_PORT}")
-        await poll_fixtures()
-
+    """Starts the WebSocket serving framework and binds the background interval poller loop."""
+    server = await websockets.serve(handle_websocket_handshake, "localhost", 8080)
+    print("[WebSocket] Communication server interface running cleanly on ws://localhost:8080")
+    
+    # Concurrently chain the long-running async worker tasks together
+    await asyncio.gather(server.wait_closed(), poll_fixtures())
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n[Poller] Shutting down gracefully.")
+        print("\n[System Shut-down] Poller engine closing down gracefully. Goodbye!")
